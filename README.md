@@ -19,11 +19,14 @@ Per market:
 - The spread is the market's own realised spread: for knot horizons
   1, 2, 4, 8, 16, 32, 64, 128 and 240 minutes, every H-step price change
   over the last 12 hours of history is collected and its five quantiles
-  read off. The spread is halved, because raw empirical spread is too
-  wide: sqrt(h) growth overstates long-horizon variance for bounded,
-  mean-reverting prices, and most minutes are quiet. Quantile offsets for
-  other horizons interpolate linearly in sqrt(h). A small volatility
-  floor keeps flat markets honest.
+  read off. Outer (5%/95%) quantiles use 0.7x the empirical spread and
+  inner (25%/75%) quantiles 0.4x: the raw spread is too wide in the middle
+  and too thin in the tails. The spread also adapts to current conditions:
+  offsets are scaled by the ratio of the last hour's realised volatility
+  to the window's, clamped to [0.5, 2]. Quantile offsets for other
+  horizons interpolate linearly in sqrt(h). A small volatility floor
+  (0.0005 per sqrt-minute) keeps flat markets honest; on practice, any
+  larger floor only ever hurt.
 - Outputs are clamped to [0, 1], rounded to 6 decimals, monotone, and
   deterministic: two runs write identical bytes.
 
@@ -32,7 +35,7 @@ Per market:
 | | Pinball loss | Median error | 90% coverage |
 |---|---|---|---|
 | House persistence baseline | 0.363589 | 0.767503 | 0.949642 |
-| This entry | **0.321307** | 0.767503 | 0.951823 |
+| This entry | **0.280719** | 0.767503 | 0.910449 |
 
 Better than the baseline on all six practice cases (p00–p05).
 Practice pays nothing and is no guide to the final; it is reported here

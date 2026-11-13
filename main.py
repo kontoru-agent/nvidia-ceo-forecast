@@ -6,17 +6,22 @@ from the case's own 1-minute price history (up to 72h, 4320 points).
 
 Method: empirical quantiles of the market's own multi-step price changes,
 calibrated on the practice phase (6 cases, 2026-11-12 06:00 UTC to
-2026-11-13 06:00 UTC; house baseline 0.363589, this entry 0.321307, better
+2026-11-13 06:00 UTC; house baseline 0.363589, this entry 0.280719, better
 on all six cases). For knot horizons H in {1,2,4,8,16,32,64,128,240} minutes,
 take every H-step change over the last 12 hours of history, sort them, and
 read the five quantiles. The median is persistence (last price): prediction
 market prices are near-martingales and any drift estimated from the window
 hurt the practice score. The spread around the median is the market's own
-realised spread, halved: the raw empirical spread is too wide because
-sqrt(h) growth overstates long-horizon variance for bounded, mean-reverting
-prices, and most minutes are quiet. Quantile offsets for other horizons are
-interpolated linearly in sqrt(h). A small volatility floor keeps flat
-markets honest. Everything is deterministic; two runs write identical bytes.
+realised spread: outer (5%/95%) quantiles use 0.7x the empirical spread and
+inner (25%/75%) quantiles 0.4x, because the raw empirical spread is too
+wide in the middle and too thin in the tails. A small volatility floor
+(0.0005 per sqrt-minute) keeps flat markets honest without over-widening:
+on practice, any larger floor only ever hurt (loss rises monotonically
+with the floor). The spread also adapts to current conditions: offsets are
+scaled by the ratio of the last hour's realised volatility to the window's,
+clamped to [0.5, 2], so heating-up markets get wider intervals and quiet
+ones narrower. Quantile offsets for other horizons are interpolated linearly
+in sqrt(h). Everything is deterministic; two runs write identical bytes.
 """
 
 import json
@@ -33,10 +38,10 @@ KNOT_H = [1, 2, 4, 8, 16, 32, 64, 128, 240]
 WINDOW = int(os.environ.get("MF_WINDOW", "720"))  # minutes of history
 MEDIAN_SHRINK = float(os.environ.get("MF_SHRINK", "0"))  # drift shrinkage
 SPREAD_SCALE = float(os.environ.get("MF_SPREAD", "0.5"))  # spread multiplier
-TAIL_SCALE = float(os.environ.get("MF_TAIL", str(SPREAD_SCALE)))
-INNER_SCALE = float(os.environ.get("MF_INNER", str(SPREAD_SCALE)))
+TAIL_SCALE = float(os.environ.get("MF_TAIL", "0.7"))
+INNER_SCALE = float(os.environ.get("MF_INNER", "0.4"))
 SCALE_J = [TAIL_SCALE, INNER_SCALE, 1.0, INNER_SCALE, TAIL_SCALE]
-SIGMA_FLOOR = float(os.environ.get("MF_FLOOR", "0.0015"))  # per sqrt(minute)
+SIGMA_FLOOR = float(os.environ.get("MF_FLOOR", "0.0005"))  # per sqrt(minute)
 BASELINE_SIGMA = 0.0025
 
 
@@ -97,6 +102,15 @@ def interp_offsets(knots, s):
 
 def forecast_market(prices, horizon):
     x = prices[-1]
+    # Volatility-adaptive spread: ratio of the last hour's realised
+    # volatility to the window's, clamped to [0.5, 2].
+    _d60 = [prices[i + 1] - prices[i]
+            for i in range(max(0, len(prices) - 61), len(prices) - 1)]
+    _dw = [prices[i + 1] - prices[i]
+           for i in range(max(0, len(prices) - 721), len(prices) - 1)]
+    _r60 = math.sqrt(sum(d * d for d in _d60) / max(1, len(_d60)))
+    _rw = math.sqrt(sum(d * d for d in _dw) / max(1, len(_dw)))
+    _vr = min(2.0, max(0.5, _r60 / _rw)) if _rw > 0 else 1.0
     knots = knot_offsets(prices)
     rows = []
     for h in range(1, horizon + 1):
@@ -105,6 +119,7 @@ def forecast_market(prices, horizon):
             offs = [z * BASELINE_SIGMA * s for z in Z]
         else:
             offs = interp_offsets(knots, s)
+            offs = [offs[2] if j == 2 else offs[j] * _vr for j in range(5)]
             for j in range(5):
                 if j == 2:
                     continue
